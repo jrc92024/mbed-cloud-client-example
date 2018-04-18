@@ -20,12 +20,24 @@
 #ifdef TARGET_LIKE_MBED
 #include "mbed.h"
 #endif
+#include "GroveGPS.h"
+#include "LM75B.h"
+
+extern int GPS_init(void);
+extern void gps_send(void);
+extern GroveGPS gps;
+LM75B sensor(D14, D15);
+int LM75B_present = 0;;
+
 
 static int main_application(void);
+
 
 int main()
 {
     // run_application() will first initialize the program and then call main_application()
+
+
     return run_application(&main_application);
 }
 
@@ -33,6 +45,17 @@ int main()
 static M2MResource* button_res;
 static M2MResource* pattern_res;
 static M2MResource* blink_res;
+static M2MResource* lattitude_res;
+static M2MResource* longitude_res;
+static M2MResource* gps_time_res;
+static M2MResource* altitude_res;
+static M2MResource* course_res;
+static M2MResource* speed_res;
+static M2MResource* uncertanty_res; 
+static M2MResource* junk_res;
+static M2MResource* temperature_res;
+static M2MResource* location_res;
+
 
 // Pointer to mbedClient, used for calling close function.
 static SimpleM2MClient *client;
@@ -63,7 +86,7 @@ void blink_callback(void *) {
     led_off();
 }
 
-void button_notification_status_callback(const M2MBase& object, const NoticationDeliveryStatus status)
+void generic_notification_status_callback(const M2MBase& object, const NoticationDeliveryStatus status)
 {
     switch(status) {
         case NOTIFICATION_STATUS_BUILD_ERROR:
@@ -91,6 +114,56 @@ void button_notification_status_callback(const M2MBase& object, const Notication
             break;
     }
 }
+
+void update_gps_resources(void)
+{
+    char tempbuffer[40];
+	char labuf[16], lobuf[16];
+	int months[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+	int tday, hours, minutes, seconds, tt;
+	gps.getLatitude(labuf);
+	lattitude_res->set_value( (const uint8_t *) labuf, strlen(labuf)); 
+    gps.getLongitude(lobuf);
+	longitude_res->set_value( (const uint8_t *) lobuf, strlen(lobuf)); 
+    gps.getTimestamp(tempbuffer);
+	gps_time_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer)); 
+	gps.getUncertanty(tempbuffer);
+	uncertanty_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer)); 
+    gps.getAltitude(tempbuffer);
+	altitude_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer));
+	gps.getCourse(tempbuffer);
+	course_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer));
+	gps.getSpeed(tempbuffer);
+	speed_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer));
+	tt = gps.gps_zda.utc_time;
+    hours = tt / 10000;
+    tt = tt - (hours*10000);
+    minutes = tt / 100;
+    seconds = tt - (minutes*100);
+	// Correct UTC to PAcific time
+	hours -= 7;
+	tday = gps.gps_zda.day;
+		if(hours < 0) { // UTC Correct
+			hours += 24;
+			tday -= 1;
+			if(!tday) {
+				tday = months[gps.gps_zda.month];
+				}
+		}
+	if( LM75B_present) {
+		sprintf( tempbuffer, "%.3f", sensor.temp());
+		temperature_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer)); 
+	}
+
+	if(gps.gps_gga.position_fix) {
+		sprintf( tempbuffer, "{\"name\":\"Jim\", \"lat\":\"%s\", \"lon\":\"%s\"}", labuf, lobuf);
+
+		location_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer));
+		sprintf(tempbuffer, "%d/%d/%d %d:%02d:%02d", gps.gps_zda.month, tday, gps.gps_zda.year, hours, minutes, seconds);
+		junk_res->set_value( (const uint8_t *) tempbuffer, strlen(tempbuffer)); 
+	}
+}
+
 
 // This function is called when a POST request is received for resource 5000/0/1.
 void unregister(void *)
@@ -121,9 +194,16 @@ int main_application(void)
     wait(2);
 #endif
 
+
     // SimpleClient is used for registering and unregistering resources to a server.
     SimpleM2MClient mbedClient;
-
+	GPS_init();
+	if (sensor.open()) {
+        printf("LM75B detected!\n");
+		LM75B_present = 1;
+        } else {
+            error("LM75B not detected!\n");
+        }
     // Save pointer to mbedClient so that other functions can access it.
     client = &mbedClient;
 
@@ -132,9 +212,42 @@ int main_application(void)
     heap_stats();
 #endif
 
+    // Create resource for lattitude. Path of this resource will be: 3336/0/5514.
+    lattitude_res = mbedClient.add_cloud_resource(3336, 0, 5514, "lattitude_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+							  
+    longitude_res = mbedClient.add_cloud_resource(3336, 0, 5515, "longitude_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);	
+							  
+    location_res = mbedClient.add_cloud_resource(3336, 0, 5597, "location_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);	
+							  							  
+    uncertanty_res = mbedClient.add_cloud_resource(3336, 0, 5516, "Uncertanty_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);	
+							  							  
+    gps_time_res = mbedClient.add_cloud_resource(3336, 0, 5518, "GPStime_resource", M2MResourceInstance::TIME,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+
+    altitude_res = mbedClient.add_cloud_resource(3336, 0, 5799, "Altitude_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+
+	course_res = mbedClient.add_cloud_resource(3336, 0, 5705, "Course_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+
+	speed_res = mbedClient.add_cloud_resource(3336, 0, 5517, "Speed_resource", M2MResourceInstance::STRING,
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+
+	junk_res = mbedClient.add_cloud_resource(3336, 0, 5598, "Date-Time_resource", M2MResourceInstance::STRING,
+                             M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+
+	if(LM75B_present) {
+		temperature_res = mbedClient.add_cloud_resource(3303, 0, 5700, "Temperature_resource", M2MResourceInstance::FLOAT,
+							M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
+	}
+	
     // Create resource for button count. Path of this resource will be: 3200/0/5501.
     button_res = mbedClient.add_cloud_resource(3200, 0, 5501, "button_resource", M2MResourceInstance::INTEGER,
-                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)button_notification_status_callback);
+                              M2MBase::GET_ALLOWED, 0, true, NULL, (void*)generic_notification_status_callback);
 
     // Create resource for led blinking pattern. Path of this resource will be: 3201/0/5853.
     pattern_res = mbedClient.add_cloud_resource(3201, 0, 5853, "pattern_resource", M2MResourceInstance::STRING,
@@ -161,7 +274,10 @@ int main_application(void)
     // Check if client is registering or registered, if true sleep and repeat.
     while (mbedClient.is_register_called()) {
         static int button_count = 0;
-        do_wait(100);
+        do_wait(1000);
+
+		update_gps_resources();
+		
         if (button_clicked()) {
             button_res->set_value(++button_count);
         }
